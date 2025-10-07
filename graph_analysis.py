@@ -9,70 +9,70 @@ import argparse, csv, math, os, random, sys
 from collections import deque
 from datetime import datetime
 import matplotlib.pyplot as plt, networkx as nx, numpy as np
-
-try:
-    from scipy.stats import ttest_ind
-    SCIPY = True
-except:
-    SCIPY = False
+from networkx.algorithms.community import girvan_newman
+from scipy.stats import ttest_ind
+import scipy.stats
 
 def eprint(*x): print(*x, file=sys.stderr)
 
 def load_graph(path):
     if not os.path.exists(path): raise FileNotFoundError(path)
     G = nx.read_gml(path)
-    if isinstance(G, (nx.DiGraph, nx.MultiDiGraph)):
-        UG = nx.Graph()
-        [UG.add_edge(u,v,**d) for u,v,d in G.edges(data=True)]
-        [UG.add_node(n,**d) for n,d in G.nodes(data=True)]
-        G = UG
+    if G.is_directed(): 
+        G = nx.Graph(G)
     if G.number_of_nodes()==0: eprint('[warn] Empty graph')
     return G
 
-def layout(G):
-    if 'pos' not in G.graph: G.graph['pos']=nx.spring_layout(G,seed=42)
-    return G.graph['pos']
 
 def clustering(G):
-    cc=nx.clustering(G); nx.set_node_attributes(G,cc,'cc'); return cc
+    cc=nx.clustering(G)
+    nx.set_node_attributes(G,cc,'cc')
 
 def overlap(G):
     data={}
     for u,v in G.edges():
         Nu,Nv=set(G.neighbors(u))- {v}, set(G.neighbors(v))- {u}
         d=len(Nu|Nv)
-        data[(u,v)]=0 if d==0 else len(Nu&Nv)/d
+        if d==0:
+            data[(u,v)]=0 
+        else:
+            data[(u,v)]=len(Nu&Nv)/d
     nx.set_edge_attributes(G,{tuple(sorted([u,v])):{'no':data[(u,v)]} for u,v in G.edges()})
-    return data
+
+def components(G,n, robustnessK=0):
+    G.remove_edges_from(random.sample(list(G.edges()), robustnessK))
+    parts=girvan_newman_partition(G,n)
+    annotate(G,parts)
+    return G, parts
 
 def girvan_newman_partition(G,n):
-    from networkx.algorithms.community import girvan_newman
-    comp=nx.connected_components(G) if G.number_of_edges()==0 else next(girvan_newman(G))
-    try:
-        gen=girvan_newman(G)
-        for _ in range(n-1): comp=next(gen)
-    except: pass
-    return [sorted(list(c)) for c in comp]
+    gen=girvan_newman(G)
+    for x in range(n): 
+        comp=next(gen)
+    return comp
 
-def annotate(G,parts):
-    d={n:i for i,p in enumerate(parts) for n in p}
-    nx.set_node_attributes(G,d,'community')
+def annotate(G, parts):
+    d = {}
+    for i, community in enumerate(parts):
+        for node in community:
+            d[node] = i
+    nx.set_node_attributes(G, d, 'community')
 
 def homophily(G):
     same,diff=[],[]
     for u,v in G.edges():
         cu,cv=G.nodes[u].get('color'),G.nodes[v].get('color')
-        if cu is None or cv is None: continue
-        sim=-abs(G.degree(u)-G.degree(v))
-        (same if cu==cv else diff).append(sim)
-    if len(same)<2 or len(diff)<2: return {'error':'not enough data'}
-    if SCIPY: t,p=ttest_ind(same,diff,equal_var=False)
-    else:
-        m1,m2=np.mean(same),np.mean(diff)
-        s1,s2=np.var(same,ddof=1),np.var(diff,ddof=1)
-        t=(m1-m2)/math.sqrt(s1/len(same)+s2/len(diff))
-        p=0.05
-    d=(np.mean(same)-np.mean(diff))/max(1e-9,math.sqrt(((len(same)-1)*np.var(same,ddof=1)+(len(diff)-1)*np.var(diff,ddof=1))/(len(same)+len(diff)-2)))
+        if cu is None or cv is None: 
+            continue
+        sim= 1/(1+abs(G.degree(u)-G.degree(v)))
+        if cu == cv:
+            same.append(sim)
+        else:
+            diff.append(sim)
+    if len(same)<2 or len(diff)<2: 
+        return {'error':'not enough data'}
+    t,p=ttest_ind(same,diff,equal_var=False)
+    d = scipy.stats.cohen_d(same,diff).cohen_d
     return {'t':round(t,3),'p':round(p,4),'d':round(d,3)}
 
 def balance(G):
@@ -85,8 +85,11 @@ def balance(G):
             for v in G.neighbors(u):
                 sign=int(G[u][v].get('sign',1))
                 exp=label[u]* (1 if sign>=0 else -1)
-                if v not in label: label[v]=exp; q.append(v)
-                elif label[v]!=exp: return False
+                if v not in label:
+                    label[v]=exp
+                    q.append(v)
+                elif label[v]!=exp: 
+                    return False
     return True
 
 def stats(G):
@@ -110,11 +113,11 @@ def robustness(G,k,trials,parts=None):
     return {'avg_comp':np.mean(res) if res else 0}
 
 def plot_graph(G,mode,out=None):
-    pos=layout(G); plt.figure(figsize=(8,6))
+    pos=nx.spring_layout(G); plt.figure(figsize=(8,6))
     if mode=='C':
         clustering(G); c=[G.degree(n) for n in G]
         s=[300+2000*G.nodes[n].get('cc',0) for n in G]
-        nx.draw(G,pos,node_size=s,node_color=c,cmap=plt.cm.viridis,with_labels=True)
+        nx.draw(G,pos,node_size=s,node_color=c,cmap=plt.cm.cool,with_labels=True)
     elif mode=='N':
         overlap(G); w=[1+6*G[u][v]['no'] for u,v in G.edges()]
         nx.draw(G,pos,with_labels=True,width=w,edge_color='gray')
@@ -127,8 +130,7 @@ def plot_graph(G,mode,out=None):
     else: plt.show(); plt.close()
 
 def export_graph(G,out):
-    H=G.copy(); H.graph.pop('pos',None)
-    nx.write_gml(H,out)
+    nx.write_gml(G,out)
 
 def parse_csv(path):
     ev=[]
@@ -139,7 +141,7 @@ def parse_csv(path):
     return sorted(ev)
 
 def temporal(G,path,out=None):
-    ev=parse_csv(path); pos=layout(G); snaps=[]
+    ev=parse_csv(path); pos=nx.spring_layout(G); snaps=[]
     for _,u,v,a in ev:
         if a=='add': G.add_edge(u,v)
         elif a=='remove' and G.has_edge(u,v): G.remove_edge(u,v)
