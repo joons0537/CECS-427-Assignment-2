@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """graph_analysis.py - CECS 427 Project
+Joonsu Mock and Berit Cheema
 Analyze and visualize graphs: clustering, overlap, communities, homophily,
 balance, failures, robustness, and temporal evolution.
 """
